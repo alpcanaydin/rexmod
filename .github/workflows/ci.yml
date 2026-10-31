@@ -26,7 +26,7 @@ jobs:
           test -z "$(gofmt -l cmd)"
       - name: Build the prebuilt files (rexmod, insertdylib, panel)
         run: make dist
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
