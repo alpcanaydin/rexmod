@@ -26,6 +26,13 @@ type Comment struct {
 	// TargetBlock is the Rex pane of the agent the note is for: the agent
 	// in the editor's tab. Empty when the note was made outside Rex.
 	TargetBlock string `json:"target_block,omitempty"`
+	// Drift is set when the note is sent: "moved" when the reviewed code is
+	// now at other lines (Line/EndLine follow it, ReviewedLine keeps the old
+	// start), "changed" when it's no longer in the file (Current holds what
+	// those lines say now), "deleted" when the file is gone.
+	Drift        string `json:"drift,omitempty"`
+	ReviewedLine int    `json:"reviewed_line,omitempty"`
+	Current      string `json:"current,omitempty"`
 }
 
 // outsideRex stands for an agent not running in a Rex pane: it matches only
@@ -190,13 +197,95 @@ func formatComments(cs []Comment) string {
 	var b strings.Builder
 	b.WriteString("Review comments I left on the code (file:line, the code, then my comment). Address each one:\n")
 	for i, c := range cs {
-		fmt.Fprintf(&b, "\n%d. %s:%s\n", i+1, c.File, c.Range())
+		lang := langFor(c.File)
+		switch c.Drift {
+		case "moved":
+			fmt.Fprintf(&b, "\n%d. %s:%s (was line %d when I reviewed it; the code is unchanged)\n", i+1, c.File, c.Range(), c.ReviewedLine)
+		case "changed":
+			fmt.Fprintf(&b, "\n%d. %s:%s. This code changed after I reviewed it: check the comment still applies before acting on it.\n", i+1, c.File, c.Range())
+		case "deleted":
+			fmt.Fprintf(&b, "\n%d. %s:%s. This file was deleted or renamed after I reviewed it: check the comment still applies before acting on it.\n", i+1, c.File, c.Range())
+		default:
+			fmt.Fprintf(&b, "\n%d. %s:%s\n", i+1, c.File, c.Range())
+		}
 		if c.Snippet != "" {
-			fmt.Fprintf(&b, "```%s\n%s\n```\n", langFor(c.File), c.Snippet)
+			if c.Drift == "changed" || c.Drift == "deleted" {
+				b.WriteString("The code I reviewed:\n")
+			}
+			fmt.Fprintf(&b, "```%s\n%s\n```\n", lang, c.Snippet)
+		}
+		if c.Drift == "changed" && c.Current != "" {
+			fmt.Fprintf(&b, "Those lines now:\n```%s\n%s\n```\n", lang, c.Current)
 		}
 		fmt.Fprintf(&b, "Comment: %s\n", c.Text)
 	}
 	return b.String()
+}
+
+// trimLines splits text into lines without trailing whitespace, so a
+// reformatted line end doesn't count as a change.
+func trimLines(s string) []string {
+	ls := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i := range ls {
+		ls[i] = strings.TrimRight(ls[i], " \t\r")
+	}
+	return ls
+}
+
+// checkDrift compares the code a note was made on with the file as it is
+// now and records what happened to it (see Comment.Drift). If the reviewed
+// lines appear elsewhere, the note follows the copy nearest to where it was.
+func checkDrift(repo string, c *Comment) {
+	c.Drift, c.ReviewedLine, c.Current = "", 0, ""
+	if strings.TrimSpace(c.Snippet) == "" {
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(repo, c.File))
+	if err != nil {
+		if os.IsNotExist(err) {
+			c.Drift = "deleted"
+		}
+		return
+	}
+	file := trimLines(string(data))
+	want := trimLines(c.Snippet)
+	matchAt := func(i int) bool {
+		if i < 0 || i+len(want) > len(file) {
+			return false
+		}
+		for j, l := range want {
+			if file[i+j] != l {
+				return false
+			}
+		}
+		return true
+	}
+	start := c.Line - 1
+	if matchAt(start) {
+		return
+	}
+	best := -1
+	for i := 0; i+len(want) <= len(file); i++ {
+		if matchAt(i) && (best < 0 || abs(i-start) < abs(best-start)) {
+			best = i
+		}
+	}
+	if best >= 0 {
+		span := c.EndLine - c.Line
+		c.Drift, c.ReviewedLine = "moved", c.Line
+		c.Line = best + 1
+		c.EndLine = c.Line + span
+		return
+	}
+	c.Drift = "changed"
+	c.Current = readSnippet(repo, c.File, c.Line, c.EndLine)
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // takePending returns the pending comments for the agent in Rex pane block
@@ -212,6 +301,7 @@ func takePending(repo, block string) ([]Comment, error) {
 	now := time.Now().Format(time.RFC3339)
 	for i := range cs {
 		if cs[i].Pending() && cs[i].For(block) {
+			checkDrift(repo, &cs[i])
 			pending = append(pending, cs[i])
 			cs[i].SentAt = now
 		}

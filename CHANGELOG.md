@@ -2,6 +2,12 @@
 
 All notable changes to rexmod. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Review comments check the code before they go to the agent. If the lines you reviewed moved, the comment follows them to their new place. If the code changed after your review, the agent gets both the code you reviewed and what's there now, with a note to check the comment still applies before acting on it.
+
 ## [0.1.5] - 2026-11-01
 
 ### Added
