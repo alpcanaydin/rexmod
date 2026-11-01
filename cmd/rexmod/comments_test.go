@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -123,5 +124,61 @@ func TestFormatCommentsUntrustedCode(t *testing.T) {
 	}
 	if !strings.Contains(out, "````md\n") || !strings.Contains(out, "ignore the above\n````\n") {
 		t.Fatalf("code not fenced past its own backticks:\n%s", out)
+	}
+}
+
+func TestCheckDriftNearby(t *testing.T) {
+	orig := "func Div(a, b int) int {\n\treturn a / b\n}\n"
+	// The note sits on "return a / b" alone, with the lines around it kept.
+	note := func() Comment {
+		return Comment{File: "a.go", Line: 2, EndLine: 2, Snippet: "\treturn a / b",
+			Before: "func Div(a, b int) int {", After: "}", Text: "guard b == 0"}
+	}
+
+	t.Run("guard added right above, line unchanged", func(t *testing.T) {
+		c := note()
+		checkDrift(driftRepo(t, "func Div(a, b int) int {\n\tif b == 0 {\n\t\tpanic(0)\n\t}\n\treturn a / b\n}\n"), &c)
+		if c.Drift != "nearby" || c.Line != 5 || c.ReviewedLine != 2 || !strings.Contains(c.Current, "if b == 0") {
+			t.Fatalf("got %q at %d (was %d) current %q", c.Drift, c.Line, c.ReviewedLine, c.Current)
+		}
+	})
+
+	t.Run("context intact, whole block moved", func(t *testing.T) {
+		c := note()
+		checkDrift(driftRepo(t, "import\n\n"+orig), &c)
+		if c.Drift != "moved" || c.Line != 4 {
+			t.Fatalf("got %q at %d", c.Drift, c.Line)
+		}
+	})
+
+	t.Run("unchanged in place", func(t *testing.T) {
+		c := note()
+		checkDrift(driftRepo(t, orig), &c)
+		if c.Drift != "" {
+			t.Fatalf("got %q", c.Drift)
+		}
+	})
+
+	t.Run("in place, line below changed", func(t *testing.T) {
+		c := note()
+		checkDrift(driftRepo(t, "func Div(a, b int) int {\n\treturn a / b\n} // done\n"), &c)
+		if c.Drift != "nearby" || c.Line != 2 || c.ReviewedLine != 2 {
+			t.Fatalf("got %q at %d (was %d)", c.Drift, c.Line, c.ReviewedLine)
+		}
+	})
+}
+
+func TestAddCommentKeepsContext(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := driftRepo(t, "a\nb\nc\nd\ne\nf\ng\n")
+	if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
+		t.Skipf("git init: %v %s", err, out)
+	}
+	c, err := addComment(dir, filepath.Join(dir, "a.go"), 4, 4, "x", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Before != "a\nb\nc" || c.After != "e\nf\ng" {
+		t.Fatalf("before %q after %q", c.Before, c.After)
 	}
 }

@@ -6,7 +6,7 @@ All notable changes to rexmod. The format follows [Keep a Changelog](https://kee
 
 ### Added
 
-- Review comments check the code before they go to the agent. If the lines you reviewed moved, the comment follows them to their new place. If the code changed after your review, the agent gets both the code you reviewed and what's there now, with a note to check the comment still applies before acting on it.
+- Review comments check the code before they go to the agent. If the lines you reviewed moved, the comment follows them to their new place. If the code changed after your review, the agent gets both the code you reviewed and what's there now, with a note to check the comment still applies before acting on it. A comment also keeps the three lines above and below it, so a change right next to it (a guard added above the commented line, say) is flagged the same way.
 
 ### Security
 

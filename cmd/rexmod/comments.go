@@ -27,10 +27,15 @@ type Comment struct {
 	// in the editor's tab. Empty when the note was made outside Rex.
 	TargetBlock string `json:"target_block,omitempty"`
 	// Drift is set when the note is sent: "moved" when the reviewed code is
-	// now at other lines, "changed" when it's no longer in the file, "deleted"
+	// now at other lines, "nearby" when the reviewed lines are intact but the
+	// code right around them changed, "changed" when it's no longer in the file, "deleted"
 	// when the file is gone. For moved and changed notes ReviewedLine keeps
 	// the old start and Line/EndLine point at where the code is now (0 when a
 	// changed note's code can't be found); Current holds that changed code.
+	// Before and After are up to contextLines lines around the note when it
+	// was made, so a change right next to the reviewed lines counts too.
+	Before       string `json:"before,omitempty"`
+	After        string `json:"after,omitempty"`
 	Drift        string `json:"drift,omitempty"`
 	ReviewedLine int    `json:"reviewed_line,omitempty"`
 	Current      string `json:"current,omitempty"`
@@ -157,6 +162,10 @@ func readSnippet(repo, rel string, from, to int) string {
 	return strings.Join(lines[from-1:to], "\n")
 }
 
+// contextLines is how many lines above and below a note are kept to notice
+// changes right next to it.
+const contextLines = 3
+
 func addComment(repo, file string, line, end int, text, snippet, target string) (*Comment, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -169,9 +178,16 @@ func addComment(repo, file string, line, end int, text, snippet, target string) 
 	if snippet == "" {
 		snippet = readSnippet(repo, rel, line, end)
 	}
+	var before, after string
+	if line > 1 {
+		before = readSnippet(repo, rel, max(1, line-contextLines), line-1)
+	}
+	if b, err := os.ReadFile(filepath.Join(repo, rel)); err == nil && end < len(trimLines(string(b))) {
+		after = readSnippet(repo, rel, end+1, end+contextLines)
+	}
 	c := Comment{
 		ID: newID(), File: rel, Line: line, EndLine: end, Text: text,
-		Snippet:     snippet,
+		Snippet: snippet, Before: before, After: after,
 		CreatedAt:   time.Now().Format(time.RFC3339),
 		TargetBlock: target,
 	}
@@ -202,6 +218,8 @@ func formatComments(cs []Comment) string {
 		switch c.Drift {
 		case "moved":
 			fmt.Fprintf(&b, "\n%d. %s:%s (was line %d when I reviewed it; the code is unchanged)\n", i+1, c.File, c.Range(), c.ReviewedLine)
+		case "nearby":
+			fmt.Fprintf(&b, "\n%d. %s:%s (reviewed at line %d). The lines I commented on are unchanged, but the code right around them changed after I reviewed it: check the comment still applies before acting on it.\n", i+1, c.File, c.Range(), c.ReviewedLine)
 		case "changed":
 			if c.Line > 0 {
 				fmt.Fprintf(&b, "\n%d. %s, reviewed at line %d. This code changed after I reviewed it; it now looks to be at line %s. Check the comment still applies before acting on it.\n", i+1, c.File, c.ReviewedLine, c.Range())
@@ -214,13 +232,17 @@ func formatComments(cs []Comment) string {
 			fmt.Fprintf(&b, "\n%d. %s:%s\n", i+1, c.File, c.Range())
 		}
 		if c.Snippet != "" {
-			if c.Drift == "changed" || c.Drift == "deleted" {
+			if c.Drift == "changed" || c.Drift == "deleted" || c.Drift == "nearby" {
 				b.WriteString("The code I reviewed:\n")
 			}
 			writeCode(&b, lang, c.Snippet)
 		}
-		if c.Drift == "changed" && c.Current != "" {
-			b.WriteString("What's there now:\n")
+		if (c.Drift == "changed" || c.Drift == "nearby") && c.Current != "" {
+			if c.Drift == "nearby" {
+				b.WriteString("Around it now:\n")
+			} else {
+				b.WriteString("What's there now:\n")
+			}
 			writeCode(&b, lang, c.Current)
 		}
 		fmt.Fprintf(&b, "Comment: %s\n", c.Text)
@@ -297,20 +319,32 @@ func checkDrift(repo string, c *Comment) {
 		return true
 	}
 	start := c.Line - 1
-	if matchAt(start) {
-		return
-	}
 	best := -1
-	for i := 0; i+len(want) <= len(file); i++ {
-		if matchAt(i) && (best < 0 || abs(i-start) < abs(best-start)) {
-			best = i
+	if matchAt(start) {
+		best = start
+	} else {
+		for i := 0; i+len(want) <= len(file); i++ {
+			if matchAt(i) && (best < 0 || abs(i-start) < abs(best-start)) {
+				best = i
+			}
 		}
 	}
 	if best >= 0 {
 		span := c.EndLine - c.Line
-		c.Drift, c.ReviewedLine = "moved", c.Line
-		c.Line = best + 1
-		c.EndLine = c.Line + span
+		if best != start {
+			c.Drift, c.ReviewedLine = "moved", c.Line
+			c.Line = best + 1
+			c.EndLine = c.Line + span
+		}
+		// The lines themselves are intact; did the code right around them change?
+		// (A guard added just above a commented line, say.)
+		if !contextIntact(file, best, len(want), c.Before, c.After) {
+			if c.ReviewedLine == 0 {
+				c.ReviewedLine = c.Line
+			}
+			c.Drift = "nearby"
+			c.Current = readSnippet(repo, c.File, max(1, c.Line-contextLines), c.EndLine+contextLines)
+		}
 		return
 	}
 	// Not there any more. Find where it most likely went: the nearest copy of
@@ -344,6 +378,35 @@ func checkDrift(repo string, c *Comment) {
 		return
 	}
 	c.Line, c.EndLine = 0, 0
+}
+
+// contextIntact reports whether the lines recorded around a note when it was
+// made still sit right above and below where its code is now (at index at,
+// n lines long). Notes from before context was recorded always pass.
+func contextIntact(file []string, at, n int, before, after string) bool {
+	if before != "" {
+		b := trimLines(before)
+		if at-len(b) < 0 {
+			return false
+		}
+		for j, l := range b {
+			if file[at-len(b)+j] != l {
+				return false
+			}
+		}
+	}
+	if after != "" {
+		a := trimLines(after)
+		if at+n+len(a) > len(file) {
+			return false
+		}
+		for j, l := range a {
+			if file[at+n+j] != l {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func abs(n int) int {
