@@ -7,6 +7,7 @@ All notable changes to rexmod. The format follows [Keep a Changelog](https://kee
 ### Fixed
 
 - Rex's own "Check for Updates…" now runs rexmod's `update.sh` (official build, checked, then patched) and reports the result, instead of starting Sparkle and ending in "Update failed".
+- Images in the editor pane stayed black: Neovim 0.12 runs its screen in a separate process, and the image plugin's `nvim_ui_send` writes never reached Rex. In Rex they now go straight to the pane's terminal.
 
 ## [0.1.4] - 2026-11-01
 

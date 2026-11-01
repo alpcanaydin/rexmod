@@ -21,6 +21,31 @@ return {
       -- Unicode placeholders aren't verified in Rex, so images use direct placements.
       local envs = require("snacks.image.terminal").envs()
       table.insert(envs, 1, { name = "rex", env = { TERM_PROGRAM = "rex" }, supported = true, placeholders = false })
+
+      -- Neovim 0.12 runs the TUI and the editor as two processes, and snacks sends images with
+      -- nvim_ui_send, which doesn't reach Rex. In Rex, write them to the TUI's terminal instead:
+      -- the parent process's tty.
+      if vim.env.TERM_PROGRAM == "rex" then
+        local tty
+        local function open_tty()
+          if tty == nil then
+            local name = vim.trim(vim.fn.system({ "ps", "-o", "tty=", "-p", tostring(vim.uv.os_getppid()) }))
+            tty = (vim.v.shell_error == 0 and name ~= "" and name ~= "??") and io.open("/dev/" .. name, "w") or false
+          end
+          return tty
+        end
+        local terminal = require("snacks.image.terminal")
+        local write = terminal.write
+        terminal.write = function(data)
+          local f = open_tty()
+          if not f then
+            return write(data)
+          end
+          data = terminal.transform and terminal.transform(data) or data
+          f:write(data)
+          f:flush()
+        end
+      end
     end,
     opts = {
       image = {
