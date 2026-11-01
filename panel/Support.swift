@@ -165,10 +165,22 @@ enum UpdateHook {
         for (clsName, selName) in targets {
             guard let cls = NSClassFromString(clsName),
                   let method = class_getInstanceMethod(cls, NSSelectorFromString(selName)) else { continue }
-            let block: @convention(block) (AnyObject, AnyObject?) -> Void = { _, _ in
-                DispatchQueue.main.async { runUpdate() }
+            // The replacement must match the method's arguments: checkForUpdates
+            // takes none, checkForUpdates: takes a sender. Reading a sender that
+            // isn't there crashes Rex.
+            let imp: IMP
+            if selName.hasSuffix(":") {
+                let block: @convention(block) (AnyObject, AnyObject?) -> Void = { _, _ in
+                    DispatchQueue.main.async { runUpdate() }
+                }
+                imp = imp_implementationWithBlock(block)
+            } else {
+                let block: @convention(block) (AnyObject) -> Void = { _ in
+                    DispatchQueue.main.async { runUpdate() }
+                }
+                imp = imp_implementationWithBlock(block)
             }
-            method_setImplementation(method, imp_implementationWithBlock(block))
+            method_setImplementation(method, imp)
             RM.log("update hook installed on \(clsName).\(selName)")
         }
     }
