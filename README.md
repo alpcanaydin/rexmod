@@ -45,6 +45,8 @@ Around the loop:
   preview.
 - **Several agents per tab.** The harness follows the agent you focused last; its name at the bottom
   of the panel is a menu to switch. A note always goes to the agent it was written for.
+- **Media previews.** Images and PDFs open as pictures in the editor, videos show their first
+  frame (`Space u o` plays them in the macOS app), and markdown renders in place, images included (`Space c p` opens a live browser preview).
 - **The agent knows the harness.** Every agent gets the `rexmod` skill, so it can open a file for
   you in the editor pane (`rexmod open file:line`) when it points you at something.
 - **Out of the way.** Hidden, the panel takes no space; the toggle sits with the pane actions,
