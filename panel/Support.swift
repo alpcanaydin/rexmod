@@ -1,6 +1,7 @@
 import AppKit
 import CoreServices
 import Foundation
+import ObjectiveC
 
 enum RM {
     static let home = NSHomeDirectory()
@@ -140,5 +141,64 @@ final class FSWatcher {
             FSEventStreamInvalidate(s)
             FSEventStreamRelease(s)
         }
+    }
+}
+
+/// Sparkle can't update the patched Rex (its installer only accepts an app
+/// signed by Superlogical), so "Check for Updates…" would always end in
+/// "Update failed". Route Sparkle's user-initiated check to rexmod's
+/// update.sh instead: it installs the official build, re-patches it, and the
+/// result is shown in an alert.
+enum UpdateHook {
+    private static var installed = false
+    private static var running = false
+    static var script: String { RM.home + "/Library/Application Support/rexmod/scripts/update.sh" }
+
+    static func install() {
+        guard !installed else { return }
+        installed = true
+        let targets: [(String, String)] = [
+            ("SPUUpdater", "checkForUpdates"),
+            ("SPUStandardUpdaterController", "checkForUpdates:"),
+            ("SUUpdater", "checkForUpdates:"),
+        ]
+        for (clsName, selName) in targets {
+            guard let cls = NSClassFromString(clsName),
+                  let method = class_getInstanceMethod(cls, NSSelectorFromString(selName)) else { continue }
+            let block: @convention(block) (AnyObject, AnyObject?) -> Void = { _, _ in
+                DispatchQueue.main.async { runUpdate() }
+            }
+            method_setImplementation(method, imp_implementationWithBlock(block))
+            RM.log("update hook installed on \(clsName).\(selName)")
+        }
+    }
+
+    static func runUpdate() {
+        guard !running else { return }
+        guard FileManager.default.isExecutableFile(atPath: script) else {
+            alert("rexmod can't update Rex", "\(script) is missing. Run rexmod's install.sh again.")
+            return
+        }
+        running = true
+        Shell.run("/bin/sh", [script], timeout: 600) { status, out, err in
+            running = false
+            let text = String(data: out, encoding: .utf8) ?? ""
+            if status != 0 {
+                let detail = (err.isEmpty ? text : err).trimmingCharacters(in: .whitespacesAndNewlines)
+                alert("Rex update failed", String(detail.suffix(600)))
+            } else if text.contains("installed official Rex") {
+                alert("Rex was updated", "The new version is installed and patched. Quit Rex (⌘Q) and open it again to use it.")
+            } else {
+                let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+                alert("Rex is up to date", "You're on the latest Rex\(v.isEmpty ? "" : " (\(v))"). If a newer one was installed in the background, quit and reopen Rex.")
+            }
+        }
+    }
+
+    private static func alert(_ title: String, _ info: String) {
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = info
+        a.runModal()
     }
 }

@@ -2,6 +2,12 @@
 
 All notable changes to rexmod. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- Rex's own "Check for Updates…" now runs rexmod's `update.sh` (official build, checked, then patched) and reports the result, instead of starting Sparkle and ending in "Update failed".
+
 ## [0.1.4] - 2026-11-01
 
 ### Fixed

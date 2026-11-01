@@ -510,6 +510,7 @@ final class PanelHost: NSObject {
         guard !started else { return }
         started = true
         RM.log("panel start, rexmod=\(RM.rexmodPath)")
+        UpdateHook.install()
         let nc = NotificationCenter.default
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didBecomeMainNotification] {
             nc.addObserver(self, selector: #selector(windowChanged(_:)), name: name, object: nil)
