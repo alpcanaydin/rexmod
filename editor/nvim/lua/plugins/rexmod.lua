@@ -45,6 +45,20 @@ return {
           f:write(data)
           f:flush()
         end
+
+        -- Without placeholders an image is a direct placement, and snacks only marks it hidden
+        -- when its buffer leaves the window: it stays on screen over the next buffer. Delete
+        -- the placement when it hides; snacks places it again when the buffer comes back.
+        local placement = require("snacks.image.placement")
+        local hide = placement.hide
+        placement.hide = function(self)
+          -- snacks never clears `hidden` when the image shows again, so don't check it;
+          -- hide only runs when the window state changed, and a second delete is harmless.
+          if self:ready() then
+            terminal.request({ a = "d", d = "i", i = self.img.id, p = self.id })
+          end
+          return hide(self)
+        end
       end
     end,
     opts = {
