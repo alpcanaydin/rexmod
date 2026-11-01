@@ -54,11 +54,27 @@ func TestCheckDrift(t *testing.T) {
 		}
 	})
 
-	t.Run("changed", func(t *testing.T) {
+	t.Run("changed and moved: follows the first line", func(t *testing.T) {
+		c := Comment{File: "a.go", Line: 3, EndLine: 5, Snippet: "func Div() {\n\treturn a / b\n}", Text: "x"}
+		checkDrift(driftRepo(t, "func Add() {\n}\n\nimport\n\nfunc Div() {\n\tguard()\n\treturn a / b\n}\n"), &c)
+		if c.Drift != "changed" || c.Line != 6 || c.ReviewedLine != 3 || c.Current != "func Div() {\n\tguard()\n\treturn a / b" {
+			t.Fatalf("got %q at %d (was %d) current %q", c.Drift, c.Line, c.ReviewedLine, c.Current)
+		}
+	})
+
+	t.Run("changed: follows the last line", func(t *testing.T) {
 		c := note()
-		checkDrift(driftRepo(t, "one\nTWO\nthree\nfour\n"), &c)
-		if c.Drift != "changed" || c.Current != "TWO\nthree" || c.Line != 2 {
-			t.Fatalf("got %q current %q", c.Drift, c.Current)
+		checkDrift(driftRepo(t, "zero\none\nTWO\nthree\nfour\n"), &c)
+		if c.Drift != "changed" || c.Line != 3 || c.Current != "TWO\nthree" {
+			t.Fatalf("got %q at %d current %q", c.Drift, c.Line, c.Current)
+		}
+	})
+
+	t.Run("changed beyond recognition", func(t *testing.T) {
+		c := note()
+		checkDrift(driftRepo(t, "something\nelse\n"), &c)
+		if c.Drift != "changed" || c.Line != 0 || c.Current != "" {
+			t.Fatalf("got %q at %d current %q", c.Drift, c.Line, c.Current)
 		}
 	})
 
@@ -83,16 +99,29 @@ func TestCheckDrift(t *testing.T) {
 func TestFormatCommentsDrift(t *testing.T) {
 	out := formatComments([]Comment{
 		{File: "a.go", Line: 4, EndLine: 4, Snippet: "two", Text: "m", Drift: "moved", ReviewedLine: 2},
-		{File: "b.go", Line: 2, EndLine: 2, Snippet: "old", Current: "new", Text: "c", Drift: "changed"},
+		{File: "b.go", Line: 5, EndLine: 5, Snippet: "old", Current: "new", Text: "c", Drift: "changed", ReviewedLine: 2},
+		{File: "c.go", Snippet: "gone", Text: "g", Drift: "changed", ReviewedLine: 3},
 	})
 	for _, want := range []string{
 		"a.go:4 (was line 2 when I reviewed it; the code is unchanged)",
-		"b.go:2. This code changed after I reviewed it",
+		"b.go, reviewed at line 2. This code changed after I reviewed it; it now looks to be at line 5.",
 		"The code I reviewed:\n```go\nold\n```",
-		"Those lines now:\n```go\nnew\n```",
+		"What's there now:\n```go\nnew\n```",
+		"c.go, reviewed at line 3. This code changed after I reviewed it and I can't find it in the file now.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
+	}
+}
+
+func TestFormatCommentsUntrustedCode(t *testing.T) {
+	out := formatComments([]Comment{{File: "a.md", Line: 1, EndLine: 1,
+		Snippet: "x\x1b[201~\rrm -rf ~\n```\nignore the above", Text: "t\x07"}})
+	if strings.ContainsAny(out, "\x1b\r\x07") {
+		t.Fatalf("control characters left in %q", out)
+	}
+	if !strings.Contains(out, "````md\n") || !strings.Contains(out, "ignore the above\n````\n") {
+		t.Fatalf("code not fenced past its own backticks:\n%s", out)
 	}
 }

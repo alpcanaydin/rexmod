@@ -27,9 +27,10 @@ type Comment struct {
 	// in the editor's tab. Empty when the note was made outside Rex.
 	TargetBlock string `json:"target_block,omitempty"`
 	// Drift is set when the note is sent: "moved" when the reviewed code is
-	// now at other lines (Line/EndLine follow it, ReviewedLine keeps the old
-	// start), "changed" when it's no longer in the file (Current holds what
-	// those lines say now), "deleted" when the file is gone.
+	// now at other lines, "changed" when it's no longer in the file, "deleted"
+	// when the file is gone. For moved and changed notes ReviewedLine keeps
+	// the old start and Line/EndLine point at where the code is now (0 when a
+	// changed note's code can't be found); Current holds that changed code.
 	Drift        string `json:"drift,omitempty"`
 	ReviewedLine int    `json:"reviewed_line,omitempty"`
 	Current      string `json:"current,omitempty"`
@@ -202,7 +203,11 @@ func formatComments(cs []Comment) string {
 		case "moved":
 			fmt.Fprintf(&b, "\n%d. %s:%s (was line %d when I reviewed it; the code is unchanged)\n", i+1, c.File, c.Range(), c.ReviewedLine)
 		case "changed":
-			fmt.Fprintf(&b, "\n%d. %s:%s. This code changed after I reviewed it: check the comment still applies before acting on it.\n", i+1, c.File, c.Range())
+			if c.Line > 0 {
+				fmt.Fprintf(&b, "\n%d. %s, reviewed at line %d. This code changed after I reviewed it; it now looks to be at line %s. Check the comment still applies before acting on it.\n", i+1, c.File, c.ReviewedLine, c.Range())
+			} else {
+				fmt.Fprintf(&b, "\n%d. %s, reviewed at line %d. This code changed after I reviewed it and I can't find it in the file now. Check the comment still applies before acting on it.\n", i+1, c.File, c.ReviewedLine)
+			}
 		case "deleted":
 			fmt.Fprintf(&b, "\n%d. %s:%s. This file was deleted or renamed after I reviewed it: check the comment still applies before acting on it.\n", i+1, c.File, c.Range())
 		default:
@@ -212,14 +217,45 @@ func formatComments(cs []Comment) string {
 			if c.Drift == "changed" || c.Drift == "deleted" {
 				b.WriteString("The code I reviewed:\n")
 			}
-			fmt.Fprintf(&b, "```%s\n%s\n```\n", lang, c.Snippet)
+			writeCode(&b, lang, c.Snippet)
 		}
 		if c.Drift == "changed" && c.Current != "" {
-			fmt.Fprintf(&b, "Those lines now:\n```%s\n%s\n```\n", lang, c.Current)
+			b.WriteString("What's there now:\n")
+			writeCode(&b, lang, c.Current)
 		}
 		fmt.Fprintf(&b, "Comment: %s\n", c.Text)
 	}
-	return b.String()
+	return stripControl(b.String())
+}
+
+// writeCode fences code with more backticks than any run inside it, so code
+// that itself contains ``` can't close the block early.
+func writeCode(b *strings.Builder, lang, code string) {
+	fence, run := 3, 0
+	for _, r := range code {
+		if r == '`' {
+			run++
+			if run >= fence {
+				fence = run + 1
+			}
+		} else {
+			run = 0
+		}
+	}
+	f := strings.Repeat("`", fence)
+	fmt.Fprintf(b, "%s%s\n%s\n%s\n", f, lang, code, f)
+}
+
+// stripControl drops control characters but newline and tab. The text is
+// pasted into the agent's terminal, where an ESC from file content (say
+// ESC[201~, the end of a bracketed paste) would be read as keystrokes.
+func stripControl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // trimLines splits text into lines without trailing whitespace, so a
@@ -277,8 +313,37 @@ func checkDrift(repo string, c *Comment) {
 		c.EndLine = c.Line + span
 		return
 	}
-	c.Drift = "changed"
-	c.Current = readSnippet(repo, c.File, c.Line, c.EndLine)
+	// Not there any more. Find where it most likely went: the nearest copy of
+	// its first line (e.g. the func signature), or else of its last line, and
+	// show that much code from there. Lines at the old numbers may well be
+	// unrelated code by now, so they're never shown as "the same place".
+	c.Drift, c.ReviewedLine = "changed", c.Line
+	span := c.EndLine - c.Line
+	for k, l := range []string{want[0], want[len(want)-1]} {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		at := -1
+		for i := range file {
+			if file[i] == l && (at < 0 || abs(i-start) < abs(at-start)) {
+				at = i
+			}
+		}
+		if at < 0 {
+			continue
+		}
+		if k == 1 { // matched the last line: the block ends there
+			at -= len(want) - 1
+			if at < 0 {
+				at = 0
+			}
+		}
+		c.Line = at + 1
+		c.EndLine = c.Line + span
+		c.Current = readSnippet(repo, c.File, c.Line, c.EndLine)
+		return
+	}
+	c.Line, c.EndLine = 0, 0
 }
 
 func abs(n int) int {

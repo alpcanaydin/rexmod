@@ -8,6 +8,10 @@ All notable changes to rexmod. The format follows [Keep a Changelog](https://kee
 
 - Review comments check the code before they go to the agent. If the lines you reviewed moved, the comment follows them to their new place. If the code changed after your review, the agent gets both the code you reviewed and what's there now, with a note to check the comment still applies before acting on it.
 
+### Security
+
+- Review comments pasted into the agent's pane no longer carry control characters from the file, so code containing an escape sequence (such as the end of a bracketed paste) can't type into the agent. Code blocks are fenced with more backticks than the code itself contains.
+
 ## [0.1.5] - 2026-11-01
 
 ### Added
