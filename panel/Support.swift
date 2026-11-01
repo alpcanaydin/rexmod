@@ -154,46 +154,36 @@ enum UpdateHook {
     private static var running = false
     static var script: String { RM.home + "/Library/Application Support/rexmod/scripts/update.sh" }
 
+    /// Only SPUUpdater.checkForUpdates: the standard controller's
+    /// checkForUpdates: ends there too, and this way the hook has the updater
+    /// whose delegate (Rex) is waiting to hear how the check ended.
     static func install() {
         guard !installed else { return }
         installed = true
-        let targets: [(String, String)] = [
-            ("SPUUpdater", "checkForUpdates"),
-            ("SPUStandardUpdaterController", "checkForUpdates:"),
-            ("SUUpdater", "checkForUpdates:"),
-        ]
-        for (clsName, selName) in targets {
-            guard let cls = NSClassFromString(clsName),
-                  let method = class_getInstanceMethod(cls, NSSelectorFromString(selName)) else { continue }
-            // The replacement must match the method's arguments: checkForUpdates
-            // takes none, checkForUpdates: takes a sender. Reading a sender that
-            // isn't there crashes Rex.
-            let imp: IMP
-            if selName.hasSuffix(":") {
-                let block: @convention(block) (AnyObject, AnyObject?) -> Void = { _, _ in
-                    DispatchQueue.main.async { runUpdate() }
-                }
-                imp = imp_implementationWithBlock(block)
-            } else {
-                let block: @convention(block) (AnyObject) -> Void = { _ in
-                    DispatchQueue.main.async { runUpdate() }
-                }
-                imp = imp_implementationWithBlock(block)
-            }
-            method_setImplementation(method, imp)
-            RM.log("update hook installed on \(clsName).\(selName)")
+        guard let cls = NSClassFromString("SPUUpdater"),
+              let method = class_getInstanceMethod(cls, NSSelectorFromString("checkForUpdates")) else {
+            RM.log("update hook: SPUUpdater.checkForUpdates not found")
+            return
         }
+        // checkForUpdates takes no argument; the block must take only self.
+        let block: @convention(block) (AnyObject) -> Void = { updater in
+            DispatchQueue.main.async { runUpdate(updater: updater) }
+        }
+        method_setImplementation(method, imp_implementationWithBlock(block))
+        RM.log("update hook installed on SPUUpdater.checkForUpdates")
     }
 
-    static func runUpdate() {
+    static func runUpdate(updater: AnyObject) {
         guard !running else { return }
         guard FileManager.default.isExecutableFile(atPath: script) else {
+            finishCycle(updater)
             alert("rexmod can't update Rex", "\(script) is missing. Run rexmod's install.sh again.")
             return
         }
         running = true
         Shell.run("/bin/sh", [script], timeout: 600) { status, out, err in
             running = false
+            finishCycle(updater)
             let text = String(data: out, encoding: .utf8) ?? ""
             if status != 0 {
                 let detail = (err.isEmpty ? text : err).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -205,6 +195,28 @@ enum UpdateHook {
                 alert("Rex is up to date", "You're on the latest Rex\(v.isEmpty ? "" : " (\(v))"). If a newer one was installed in the background, quit and reopen Rex.")
             }
         }
+    }
+
+    /// Tells Rex (Sparkle's delegate) the check is over, the way Sparkle would
+    /// after finding nothing, so its "Checking for updates" status clears.
+    private static func finishCycle(_ updater: AnyObject) {
+        guard let delegate = (updater as? NSObject)?.value(forKey: "delegate") as? NSObject else { return }
+        let noUpdate = NSError(domain: "SUSparkleErrorDomain", code: 1001, userInfo: [NSLocalizedDescriptionKey: "You're up to date!"])
+        let s1 = NSSelectorFromString("updaterDidNotFindUpdate:error:")
+        let s0 = NSSelectorFromString("updaterDidNotFindUpdate:")
+        if delegate.responds(to: s1) {
+            typealias F = @convention(c) (AnyObject, Selector, AnyObject, NSError) -> Void
+            unsafeBitCast(delegate.method(for: s1), to: F.self)(delegate, s1, updater, noUpdate)
+        } else if delegate.responds(to: s0) {
+            typealias F = @convention(c) (AnyObject, Selector, AnyObject) -> Void
+            unsafeBitCast(delegate.method(for: s0), to: F.self)(delegate, s0, updater)
+        }
+        let s2 = NSSelectorFromString("updater:didFinishUpdateCycleForUpdateCheck:error:")
+        if delegate.responds(to: s2) {
+            typealias F = @convention(c) (AnyObject, Selector, AnyObject, Int, NSError?) -> Void
+            unsafeBitCast(delegate.method(for: s2), to: F.self)(delegate, s2, updater, 0, nil)
+        }
+        RM.log("update hook: told the delegate the check finished")
     }
 
     private static func alert(_ title: String, _ info: String) {
