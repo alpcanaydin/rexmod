@@ -2,12 +2,17 @@
 
 All notable changes to rexmod. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.1.5] - 2026-11-01
+
+### Added
+
+- Media previews in the editor: images and PDFs open as pictures, videos show their first frame (`Space u o` plays them in the macOS app), and markdown renders in place (`Space c p` opens a live browser preview).
 
 ### Fixed
 
-- Rex's own "Check for Updates…" now runs rexmod's `update.sh` (official build, checked, then patched) and reports the result, instead of starting Sparkle and ending in "Update failed".
+- Rex's own "Check for Updates…" now runs rexmod's `update.sh` (official build, checked, then patched) and reports the result, and Rex's "Checking for updates" status clears afterwards, instead of starting Sparkle and ending in "Update failed".
 - Images in the editor pane stayed black: Neovim 0.12 runs its screen in a separate process, and the image plugin's `nvim_ui_send` writes never reached Rex. In Rex they now go straight to the pane's terminal.
+- An image stayed on screen after you switched to another buffer; it's now removed when its buffer leaves the window.
 
 ## [0.1.4] - 2026-11-01
 
