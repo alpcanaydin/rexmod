@@ -26,6 +26,14 @@ func rexBin() string {
 }
 
 func rexRun(args ...string) ([]byte, error) {
+	if out, ok := rexViaAPI(args); ok {
+		return out, nil
+	}
+	return rexCLI(args...)
+}
+
+// rexCLI runs the rex CLI.
+func rexCLI(args ...string) ([]byte, error) {
 	cmd := exec.Command(rexBin(), args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -71,6 +79,9 @@ type rexView struct {
 }
 
 func sessionView(session string) (*rexView, error) {
+	if v := takePrimedView(session); v != nil {
+		return v, nil
+	}
 	var v rexView
 	if err := rexJSON(&v, "api", "call", "-s", session, "session.view"); err != nil {
 		return nil, err
@@ -176,6 +187,9 @@ type Target struct {
 	RepoName      string      `json:"repo_name,omitempty"`
 	Branch        string      `json:"branch,omitempty"`
 	GitDir        string      `json:"git_dir,omitempty"`
+	// Host is the Rex host (rex hosts) the session lives on; empty here.
+	// Paths are then that host's.
+	Host string `json:"host,omitempty"`
 }
 
 // AgentPane is one coding agent running in a pane of the window.

@@ -21,7 +21,7 @@ const usage = `rexmod: Rex Changes panel, editor and review helpers
   rexmod state    [--session S] [--window W]           target + all change sets (JSON, for the panel)
   rexmod info     [--session S] [--window W]           agent status, session, plan usage, processes, ports (JSON)
   rexmod changes  [--repo R] [--mode M]                M = last-turn | uncommitted | branch (JSON)
-  rexmod files    [--repo R] [--changed]               files of the repo, one per line
+  rexmod files    [--repo R] [--changed] [--host H]    files of the repo, one per line (H: a Rex host)
   rexmod open     [--session S] [--window W] FILE[:LINE]  open in the editor pane
   rexmod pick     [--session S] [--window W]           fuzzy file picker in a floating layer
   rexmod preview  FILE [LINE]                          numbered preview (used by the picker)
@@ -35,12 +35,25 @@ const usage = `rexmod: Rex Changes panel, editor and review helpers
   rexmod follow   --session S --window W --block B     follow (and focus) another agent pane of the window
   rexmod hook prompt|stop [--text]                     agent turn hooks (JSON on stdin; --text: plain comments out)
   rexmod warm                                          cache the login environment for the editor pane
+  rexmod serve                                         on a remote Rex host: answer the Mac's rexmod over Rex
+
+A session on another Rex host (rex hosts) runs there, through its rexmod serve or over ssh: target,
+state, info, files, follow, open, pick and comments send; see scripts/install-remote.sh and
+remote_hosts in ~/.config/rexmod/config.json.
 `
 
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
+	}
+	if handled, err := routeRemote(os.Args[1], os.Args[2:]); handled {
+		if err != nil {
+			exitRemote(err)
+			fmt.Fprintln(os.Stderr, "rexmod:", err)
+			os.Exit(1)
+		}
+		return
 	}
 	var err error
 	switch os.Args[1] {
@@ -72,6 +85,12 @@ func main() {
 		err = cmdEditorPane(os.Args[2:])
 	case "editor-daemon":
 		err = cmdEditorDaemon(os.Args[2:])
+	case "editor-data-copy":
+		err = cmdEditorDataCopy(os.Args[2:])
+	case "serve":
+		err = cmdServe(os.Args[2:])
+	case "remote-events":
+		err = cmdRemoteEvents(os.Args[2:])
 	case "warm":
 		// Refresh the cached login environment if it is stale.
 		_ = loginEnv()
@@ -276,7 +295,9 @@ func cmdOpen(args []string) error {
 	fs := flag.NewFlagSet("open", flag.ExitOnError)
 	s, w := targetFlags(fs)
 	line := fs.Int("line", 0, "line to jump to")
+	theme := fs.String("rex-theme", "", "Rex's theme from the Mac (on a remote host)")
 	pos := parse(fs, args)
+	saveRexTheme(*theme)
 	if len(pos) == 0 {
 		return fmt.Errorf("open: missing file")
 	}
@@ -293,7 +314,9 @@ func cmdPick(args []string) error {
 	inner := fs.Bool("inner", false, "run fzf here (used inside the floating layer)")
 	here := fs.Bool("here", false, "resolve the agent pane's repo, then run fzf in this terminal")
 	repo := fs.String("repo", "", "repository for --inner")
+	theme := fs.String("rex-theme", "", "Rex's theme from the Mac (on a remote host)")
 	parse(fs, args)
+	saveRexTheme(*theme)
 	if *here {
 		t, err := resolveTarget(*s, *w)
 		if err != nil {
