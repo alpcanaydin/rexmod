@@ -19,6 +19,7 @@ struct TargetDTO: Decodable, Equatable {
     var repoName: String?
     var branch: String?
     var gitDir: String?
+    var host: String?               // the Rex host the session lives on; nil here
 }
 
 struct AgentPaneDTO: Decodable, Equatable, Identifiable {
@@ -292,6 +293,15 @@ final class PanelModel: ObservableObject {
     private var lastTargetJSON: Data?
     private var watcher: FSWatcher?
     private var watchedRepo: String?
+    /// A remote repository has no file events here. Its host's rexmod
+    /// service says when it changes (rexmod remote-events); a slow timer
+    /// covers a dropped stream.
+    private var remoteEvents: Process?
+    private var remoteHost: String?
+    private var remoteBackoff: TimeInterval = 1
+    private var safetyTimer: Timer?
+    /// A change came while the panel was hidden: refresh once it shows.
+    private var remoteDirty = false
     private var timers: [Timer] = []
     private var inflight = false
     private var pending = false
@@ -313,6 +323,13 @@ final class PanelModel: ObservableObject {
         // Tabs, focus and new agent panes change without file events.
         timers.append(Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             guard let self = self, NSApp.isActive, self.isVisible() else { return }
+            // A remote target costs a round trip to its host: not while the
+            // panel is hidden. Showing it refreshes anyway.
+            if self.target?.host != nil && !self.panelVisible { return }
+            if self.remoteDirty {
+                self.remoteDirty = false
+                self.refresh(reason: "remote")
+            }
             self.checkTarget()
         })
         // Processes come and go and the agent changes state without a file
@@ -352,6 +369,12 @@ final class PanelModel: ObservableObject {
     func refresh(reason: String) {
         guard let s = sessionID else {
             state = StateDTO(target: nil, changes: nil, pendingComments: 0, error: "No Rex session is focused.")
+            return
+        }
+        // Hidden with a remote target: no round trip to its host (session
+        // switches included) until the panel shows, which refreshes anyway.
+        if target?.host != nil && !panelVisible && reason != "shown" {
+            remoteDirty = true
             return
         }
         if inflight { pending = true; return }
@@ -398,7 +421,9 @@ final class PanelModel: ObservableObject {
     func refreshFiles() {
         guard let repo = target?.repo, !filesInflight else { return }
         filesInflight = true
-        Shell.rexmod(["files", "--repo", repo]) { [weak self] status, out, _ in
+        var args = ["files", "--repo", repo]
+        if let host = target?.host { args += ["--host", host] }
+        Shell.rexmod(args) { [weak self] status, out, _ in
             guard let self = self else { return }
             self.filesInflight = false
             guard status == 0, let s = String(data: out, encoding: .utf8) else { return }
@@ -408,14 +433,28 @@ final class PanelModel: ObservableObject {
     }
 
     private func updateWatcher() {
-        let repo = target?.repo
-        guard repo != watchedRepo else { return }
-        watchedRepo = repo
+        // The same path on two machines is two repositories.
+        let host = target?.host
+        let key = target?.repo.map { (host.map { $0 + ":" } ?? "") + $0 }
+        guard key != watchedRepo else { return }
+        watchedRepo = key
         watcher = nil
+        stopRemoteEvents()
         files = []
         collapsed = []
         expandedFiles = []
-        guard let repo = repo else { return }
+        guard key != nil, let path = target?.repo else { return }
+        if let host = host {
+            RM.log("following \(path) on Rex host \(host)")
+            startRemoteEvents(host)
+            safetyTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: true) { [weak self] _ in
+                guard let self = self, self.panelVisible, self.isVisible() else { return }
+                self.refresh(reason: "safety")
+            }
+            if tab == .files { refreshFiles() }
+            return
+        }
+        let repo = path
         var paths = [repo]
         if let gd = target?.gitDir, !gd.hasPrefix(repo + "/") { paths.append(gd) }
         watcher = FSWatcher(paths: paths) { [weak self] changed in
@@ -430,6 +469,68 @@ final class PanelModel: ObservableObject {
             if self.tab == .files { self.refreshFilesSoon() }
         }
         if tab == .files { refreshFiles() }
+    }
+
+    // MARK: remote change events
+
+    private func startRemoteEvents(_ host: String) {
+        remoteHost = host
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: RM.rexmodPath)
+        p.arguments = ["remote-events", "--host", host]
+        let out = Pipe()
+        p.standardOutput = out
+        // Its stdin: when this side goes (Rex quits or crashes), it sees EOF
+        // and takes its rex events stream with it.
+        p.standardInput = Pipe()
+        p.standardError = FileHandle.nullDevice
+        out.fileHandleForReading.readabilityHandler = { [weak self] h in
+            let data = h.availableData
+            guard !data.isEmpty, String(decoding: data, as: UTF8.self).contains("changed") else { return }
+            DispatchQueue.main.async { self?.remoteChanged() }
+        }
+        p.terminationHandler = { [weak self] ended in
+            out.fileHandleForReading.readabilityHandler = nil
+            DispatchQueue.main.async {
+                guard let self = self, self.remoteHost == host, self.remoteEvents === ended else { return }
+                // The stream ended (network, host restart): again, backing off.
+                let wait = self.remoteBackoff
+                self.remoteBackoff = min(self.remoteBackoff * 2, 5)
+                RM.log("remote events for \(host) ended; again in \(Int(wait)) s")
+                DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+                    guard let self = self, self.remoteHost == host, self.remoteEvents === ended else { return }
+                    self.startRemoteEvents(host)
+                }
+            }
+        }
+        do {
+            try p.run()
+            remoteEvents = p
+        } catch {
+            RM.log("remote events for \(host) didn't start: \(error)")
+        }
+    }
+
+    private func remoteChanged() {
+        remoteBackoff = 1 // the stream works
+        guard target?.host != nil else { return }
+        if panelVisible && isVisible() {
+            scheduleRefresh(after: 0.05, reason: "remote")
+            if tab == .files { refreshFilesSoon() }
+        } else {
+            remoteDirty = true
+        }
+    }
+
+    private func stopRemoteEvents() {
+        if remoteHost != nil { RM.log("remote events stopped") }
+        remoteHost = nil
+        remoteEvents?.terminate()
+        remoteEvents = nil
+        safetyTimer?.invalidate()
+        safetyTimer = nil
+        remoteDirty = false
+        remoteBackoff = 1
     }
 
     private var filesDebounce: DispatchWorkItem?
