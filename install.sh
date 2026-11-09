@@ -6,7 +6,7 @@
 #   ./install.sh               install everything (from a release or a checkout)
 #   ./install.sh --update-rex  also install the latest official Rex first
 #   ./install.sh --no-patch    skip patching Rex (no panel)
-#   ./install.sh --no-hooks    skip the agent hooks (Claude Code, Codex, OpenCode, Pi)
+#   ./install.sh --no-hooks    skip the agent hooks (Claude Code, Codex, OpenCode, Pi, Antigravity)
 #
 # Safe to run again; it updates what it installed before.
 set -eu
@@ -185,7 +185,7 @@ fi
 REX="$(command -v rex || echo "$HOME/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex")"
 [ -x "$REX" ] && "$REX" config reload >/dev/null 2>&1 || true
 
-# --- agent hooks: Claude Code, Codex, OpenCode, Pi ------------------------------
+# --- agent hooks: Claude Code, Codex, OpenCode, Pi, Antigravity -----------------
 if [ "$HOOKS" = 1 ]; then
   say "Hooking into your coding agents (Last Turn, comment delivery)"
   "$PREFIX/scripts/install-hooks.sh"
