@@ -2,6 +2,24 @@
 
 All notable changes to rexmod. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.18] - 2026-11-11
+
+### Added
+
+- Sessions on remote Rex hosts (`rex hosts`). The panel follows an agent whose session lives on another machine's Rex server: rexmod finds the host that has the session and runs its commands there through `rexmod serve`, a client of that host's Rex server, with ssh as the fallback. The host announces its changes, so the panel refreshes without polling. Opening a file and the `⌘P` picker run on the host too, so Neovim, its language servers and the files are all there, in the Mac's Rex theme. `scripts/install-remote.sh DEST` sets up a Linux host over ssh, and `remote_hosts` in `config.json` maps a Rex host to an ssh destination. (#12)
+- rexmod and its editor build for Linux. (#12)
+- Antigravity CLI (`agy`): Last Turn and review comments work for it as they do for the other agents. Its hooks live in a plugin rexmod installs at `~/.gemini/config/plugins/rexmod`. (#14)
+- The Files tab and the `⌘P` picker work in a folder that isn't a git repository. Changes, the branch and comments stay git-only, and the Changes tab says the folder isn't a git repository. Clicking a pane follows that pane's own folder. (#15)
+
+### Changed
+
+- The editor opens faster on a remote host. rexmod talks to the local Rex server over its API instead of starting `rex` for each call (local sessions gain from this too), trusts the host it found a session on, reads Rex's theme again only when it changes, and answers opens and picks on a client of their own, so they don't wait behind the panel's refreshes. When Neovim's data sits on a network filesystem, the editor starts from a local copy of it (`editor_data_dir` and `editor_prewarm` in `config.json`). (#13)
+- While Neovim starts, the editor pane shows the file around the line it opens at. (#13)
+
+### Fixed
+
+- Patching works with Rex's universal (Intel and Apple silicon) build: the arm64 slice is kept before the panel is inserted. (#9)
+
 ## [0.1.17] - 2026-11-03
 
 ### Fixed
